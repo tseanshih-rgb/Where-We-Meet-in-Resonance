@@ -20,13 +20,30 @@ client = udp_client.UDPClient(osc_ip, osc_port)
 EXIT_GRACE_FRAMES = 15   # frames a track may vanish before /tracking/exit is sent
                          # (bridges brief occlusions so the voice doesn't cut out)
 
+# ---------------------------------------------------------------------------
+# Cohesion settings (per-person "how tuned am I", 0 = start pitch, 1 = target)
+#   cohesion_goal = c_nearest × (1 − dispersion_norm)
+# All distances below are in "width units": x in 0..1, y scaled by frame_h/frame_w
+# so that left-right and front-back distances are measured on the same scale.
+# ---------------------------------------------------------------------------
+D_NEAR   = 0.08   # nearest-neighbour distance at/below which c_nearest = 1
+D_FAR    = 0.40   # nearest-neighbour distance at/above which c_nearest = 0
+DISP_MAX = 0.50   # group dispersion at/above which the group factor = 0
+TAU_UP   = 1.0    # seconds to move ~63% toward a HIGHER goal (tuning in: slow)
+TAU_DOWN = 0.4    # seconds to move ~63% toward a LOWER goal (drifting apart: faster)
+USE_FOOT_POINT = False   # True: use bbox bottom-centre as position (for angled cameras)
+
+def clamp01(v):
+    return max(0.0, min(1.0, v))
+
 # Logging setup — writes a CSV file next to this script
 log_filename = f"tracking_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 log_file = open(log_filename, "w", newline="")
 csv_writer = csv.writer(log_file)
 csv_writer.writerow(["timestamp", "num_people", "counter", "person_id",
                      "person_x", "person_y", "confidence", "bbox_w", "bbox_h",
-                     "speed", "speed_x", "speed_y", "dispersion", "nearest", "event"])
+                     "speed", "speed_x", "speed_y", "dispersion", "nearest",
+                     "cohesion", "event"])
 
 def log_frame(num_people, counter, tracked, dispersion, nearest, event=""):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -37,13 +54,15 @@ def log_frame(num_people, counter, tracked, dispersion, nearest, event=""):
                                  f"{info['bw']:.4f}", f"{info['bh']:.4f}",
                                  f"{info['speed']:.4f}", f"{info['speed_x']:.4f}", f"{info['speed_y']:.4f}",
                                  f"{dispersion:.4f}", f"{nearest:.4f}",
+                                 f"{cohesion.get(tid, 0.0):.4f}",
                                  event if i == 0 else ""])
     else:
         csv_writer.writerow([ts, num_people, counter, "", "", "", "", "", "", "", "", "",
-                             f"{dispersion:.4f}", f"{nearest:.4f}", event])
+                             f"{dispersion:.4f}", f"{nearest:.4f}", "", event])
     log_file.flush()
     summary = " | ".join(
-        f"id{tid}=({info['x']:.2f},{info['y']:.2f}) c={info['conf']:.2f} spd={info['speed']:.3f}"
+        f"id{tid}=({info['x']:.2f},{info['y']:.2f}) c={info['conf']:.2f} "
+        f"spd={info['speed']:.3f} coh={cohesion.get(tid, 0.0):.2f}"
         for tid, info in tracked.items()
     )
     if event:
@@ -67,11 +86,14 @@ source = sys.argv[1] if len(sys.argv) > 1 else 0
 webcamera = cv2.VideoCapture(source)
 frame_w = webcamera.get(cv2.CAP_PROP_FRAME_WIDTH)
 frame_h = webcamera.get(cv2.CAP_PROP_FRAME_HEIGHT)
+ASPECT  = frame_h / frame_w if frame_w else 1.0   # y × ASPECT → same units as x
 
 # Persistent ID tracking is now done by Ultralytics' built-in ByteTrack
 # (model.track, persist=True) — far more stable IDs than centroid matching.
 tracks: dict = {}    # id -> {x, y, conf, bw, bh, time, speed_x, speed_y, speed}
 missing: dict = {}   # id -> consecutive frames without a detection
+cohesion: dict = {}  # id -> smoothed cohesion 0..1 (0 = start pitch, 1 = target pitch)
+last_frame_time = time.time()
 
 counter                  = 0
 absence_counter          = 0
@@ -93,6 +115,7 @@ last_primary: dict = dict(x=0.0, y=0.0, conf=0.0, bw=0.0, bh=0.0,
 #   /tracking/enter         i  — a new person id appeared
 #   /tracking/exit          i  — a person id left (after grace period)
 #   /tracking/<id>/x .. /bbox/h  — per-person data, ALL people, real ids
+#   /tracking/<id>/cohesion f  — per-person tuning amount 0..1 (smoothed)
 #   /tracking/x .. /present      — legacy primary-person messages (unchanged)
 
 while True:
@@ -113,7 +136,7 @@ while True:
             tid = int(boxes.id[i])
             x1, y1, x2, y2 = boxes.xyxy[i].tolist()
             px = ((x1 + x2) / 2) / frame_w
-            py = ((y1 + y2) / 2) / frame_h
+            py = (y2 / frame_h) if USE_FOOT_POINT else ((y1 + y2) / 2) / frame_h
             bw = (x2 - x1) / frame_w
             bh = (y2 - y1) / frame_h
             c  = float(boxes.conf[i])
@@ -144,6 +167,7 @@ while True:
                 send_osc("/tracking/exit", tid)
                 del tracks[tid]
                 del missing[tid]
+                cohesion.pop(tid, None)
 
     # --- Per-person OSC (all people, real persistent ids) ----------------------
     for tid in present_ids:
@@ -155,7 +179,7 @@ while True:
         send_osc(f"/tracking/{tid}/bbox/w",     float(info["bw"]))
         send_osc(f"/tracking/{tid}/bbox/h",     float(info["bh"]))
 
-    # --- Group relation metrics -------------------------------------------------
+    # --- Group relation metrics (legacy, unchanged — drives the encounter sound) -
     pts = [(tracks[tid]["x"], tracks[tid]["y"]) for tid in present_ids]
     n = len(pts)
     if n >= 2:
@@ -171,6 +195,41 @@ while True:
     send_osc("/tracking/count",      n)
     send_osc("/tracking/dispersion", float(dispersion))
     send_osc("/tracking/nearest",    float(nearest))
+
+    # --- Per-person cohesion ------------------------------------------------------
+    # Uses EVERY track still alive, including people inside the exit grace period
+    # (at their last known position), so an occluded partner doesn't make the
+    # person next to them suddenly lose their neighbour and drift out of tune.
+    dt_frame = now - last_frame_time
+    last_frame_time = now
+
+    all_ids = list(tracks.keys())
+    fp = {tid: (tracks[tid]["x"], tracks[tid]["y"] * ASPECT) for tid in all_ids}
+    m = len(fp)
+
+    if m >= 2:
+        gx = sum(p[0] for p in fp.values()) / m
+        gy = sum(p[1] for p in fp.values()) / m
+        group_disp = sum(math.hypot(p[0] - gx, p[1] - gy) for p in fp.values()) / m
+    else:
+        group_disp = 0.0
+    group_factor = 1.0 - clamp01(group_disp / DISP_MAX)
+
+    for tid in all_ids:
+        if m >= 2:
+            ax, ay = fp[tid]
+            d = min(math.hypot(ax - fp[o][0], ay - fp[o][1]) for o in all_ids if o != tid)
+            c_near = 1.0 - clamp01((d - D_NEAR) / (D_FAR - D_NEAR))
+        else:
+            c_near = 0.0   # alone: nobody to tune with -> stay at start pitch
+
+        goal = c_near * group_factor
+        cur  = cohesion.get(tid, 0.0)
+        tau  = TAU_UP if goal > cur else TAU_DOWN
+        alpha = 1.0 - math.exp(-dt_frame / tau)   # frame-rate independent smoothing
+        cur += (goal - cur) * alpha
+        cohesion[tid] = cur
+        send_osc(f"/tracking/{tid}/cohesion", float(cur))
 
     # --- Primary person (highest-confidence track) — legacy messages -----------
     num_people = n
