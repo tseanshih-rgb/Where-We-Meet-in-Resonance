@@ -4,8 +4,8 @@ outlets = 2;
 
 var MAXV = (jsarguments.length > 1) ? jsarguments[1] : 8;
 
-//interval table, most consonant -> most dissonant
-var INTERVALS = [0, 7, 4, 5, 9, 2, 11, 6];
+var INTERVALS = [0, 7, 4, 12, 19, 16, 24, 28];
+var START =  [3, -3, -3, -7, -6, -2, -9, -11];
 
 var slotOf = {};
 var freeSlots = [];
@@ -51,6 +51,8 @@ function assign(id) {
     slotOf[id] = slot;
     outlet(0, "target", slot);
     outlet(0, "interval", INTERVALS[(slot - 1) % INTERVALS.length]);
+	outlet(0, "start", INTERVALS[(slot - 1) % INTERVALS.length] + START[(slot - 1) % START.length]);
+	outlet(0, "cohesion", 0);
     outlet(0, "on", 1);
     return slot;
 }
