@@ -40,6 +40,18 @@
 		"assistshowspatchername" : 0,
 		"boxes" : [ 			{
 				"box" : 				{
+					"id" : "obj-1",
+					"maxclass" : "newobj",
+					"numinlets" : 1,
+					"numoutlets" : 1,
+					"outlettype" : [ "" ],
+					"patching_rect" : [ 709.0, 181.0, 135.0, 22.0 ],
+					"text" : "sprintf set encounter%d"
+				}
+
+			}
+, 			{
+				"box" : 				{
 					"classic_curve" : 1,
 					"id" : "obj-6",
 					"maxclass" : "function",
@@ -129,8 +141,8 @@
 					"numinlets" : 3,
 					"numoutlets" : 2,
 					"outlettype" : [ "signal", "signal" ],
-					"patching_rect" : [ 204.0, 480.0, 75.0, 22.0 ],
-					"text" : "groove~ test"
+					"patching_rect" : [ 204.0, 480.0, 116.0, 22.0 ],
+					"text" : "groove~ encounter1"
 				}
 
 			}
@@ -237,10 +249,10 @@
 					"id" : "obj-9",
 					"maxclass" : "newobj",
 					"numinlets" : 1,
-					"numoutlets" : 2,
-					"outlettype" : [ "int", "bang" ],
-					"patching_rect" : [ 476.0, 246.5, 122.0, 23.0 ],
-					"text" : "t i b"
+					"numoutlets" : 3,
+					"outlettype" : [ "int", "int", "bang" ],
+					"patching_rect" : [ 476.0, 134.0, 40.0, 23.0 ],
+					"text" : "t i i b"
 				}
 
 			}
@@ -399,6 +411,13 @@
  ],
 		"lines" : [ 			{
 				"patchline" : 				{
+					"destination" : [ "obj-40", 0 ],
+					"source" : [ "obj-1", 0 ]
+				}
+
+			}
+, 			{
+				"patchline" : 				{
 					"destination" : [ "obj-11", 0 ],
 					"source" : [ "obj-10", 0 ]
 				}
@@ -519,9 +538,16 @@
 			}
 , 			{
 				"patchline" : 				{
-					"destination" : [ "obj-16", 0 ],
-					"midpoints" : [ 588.5, 271.0, 588.5, 271.0 ],
+					"destination" : [ "obj-1", 0 ],
 					"source" : [ "obj-9", 1 ]
+				}
+
+			}
+, 			{
+				"patchline" : 				{
+					"destination" : [ "obj-16", 0 ],
+					"midpoints" : [ 506.5, 271.0, 588.5, 271.0 ],
+					"source" : [ "obj-9", 2 ]
 				}
 
 			}
