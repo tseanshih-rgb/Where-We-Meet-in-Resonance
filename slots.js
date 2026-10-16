@@ -4,8 +4,8 @@ outlets = 2;
 
 var MAXV = (jsarguments.length > 1) ? jsarguments[1] : 8;
 
-var INTERVALS = [0, 7, 4, 12, 19, 16, 24, 28];
-var START =  [3, -3, -3, -7, -6, -2, -9, -11];
+var INTERVALS = [-12, 0, 7, 12, 16, 19, 22, 24];
+var START =  [15, 4, -2, -6, -9, -11, -19, -20];
 
 var slotOf = {};
 var freeSlots = [];
