@@ -33,6 +33,17 @@ TAU_UP   = 1.0    # seconds to move ~63% toward a HIGHER goal (tuning in: slow)
 TAU_DOWN = 0.4    # seconds to move ~63% toward a LOWER goal (drifting apart: faster)
 USE_FOOT_POINT = False   # True: use bbox bottom-centre as position (for angled cameras)
 
+# ---------------------------------------------------------------------------
+# Encounter settings: one /tracking/encounter message each time a PAIR newly
+# comes together. Distances are raw OSC units (same as /tracking/nearest).
+# A pair can fire again only after it has separated beyond ENC_FAR (hysteresis).
+# ---------------------------------------------------------------------------
+ENC_NEAR_MIN = 0.04   #距離小於這個值的話就忽略 當作是同一個人
+ENC_NEAR     = 0.20   #小於這個值就算相遇
+ENC_FAR      = 0.40   #要超過這個值才能再算一次
+ENC_COOLDOWN = 1.0    # seconds between two messages: a 3rd person joining a pair makes
+                      # two new pairs at once, but should still be ONE sound
+
 def clamp01(v):
     return max(0.0, min(1.0, v))
 
@@ -93,6 +104,8 @@ ASPECT  = frame_h / frame_w if frame_w else 1.0   # y × ASPECT → same units a
 tracks: dict = {}    # id -> {x, y, conf, bw, bh, time, speed_x, speed_y, speed}
 missing: dict = {}   # id -> consecutive frames without a detection
 cohesion: dict = {}  # id -> smoothed cohesion 0..1 (0 = start pitch, 1 = target pitch)
+pair_close: dict = {}   # (id_a, id_b) with id_a < id_b -> True while that pair is "together"
+last_encounter_time = 0.0
 last_frame_time = time.time()
 
 counter                  = 0
@@ -112,6 +125,8 @@ last_primary: dict = dict(x=0.0, y=0.0, conf=0.0, bw=0.0, bh=0.0,
 #   /tracking/dispersion    f  — mean distance of everyone to the group centroid
 #                                (0 = everyone clustered together = harmony)
 #   /tracking/nearest       f  — distance of the closest pair (meeting events)
+#   /tracking/encounter     i i — a pair (id_a, id_b) newly came together (once per pair
+#                                 until they separate beyond ENC_FAR)
 #   /tracking/enter         i  — a new person id appeared
 #   /tracking/exit          i  — a person id left (after grace period)
 #   /tracking/<id>/x .. /bbox/h  — per-person data, ALL people, real ids
@@ -168,6 +183,8 @@ while True:
                 del tracks[tid]
                 del missing[tid]
                 cohesion.pop(tid, None)
+                for key in [k for k in pair_close if tid in k]:
+                    del pair_close[key]
 
     # --- Per-person OSC (all people, real persistent ids) ----------------------
     for tid in present_ids:
@@ -195,6 +212,23 @@ while True:
     send_osc("/tracking/count",      n)
     send_osc("/tracking/dispersion", float(dispersion))
     send_osc("/tracking/nearest",    float(nearest))
+
+    # --- Encounter events: one per PAIR, every time a pair newly comes together ---
+    ids_now = sorted(present_ids)
+    new_pairs = []
+    for i, a in enumerate(ids_now):
+        for b in ids_now[i + 1:]:
+            d = math.hypot(tracks[a]["x"] - tracks[b]["x"], tracks[a]["y"] - tracks[b]["y"])
+            together = pair_close.get((a, b), False)
+            if not together and ENC_NEAR_MIN < d < ENC_NEAR:
+                pair_close[(a, b)] = True
+                new_pairs.append((a, b))
+            elif together and d > ENC_FAR:
+                pair_close[(a, b)] = False
+    if new_pairs and now - last_encounter_time >= ENC_COOLDOWN:
+        send_osc("/tracking/encounter", new_pairs[0][0], new_pairs[0][1])
+        last_encounter_time = now
+        print(f"ENCOUNTER ids {new_pairs[0][0]}-{new_pairs[0][1]}")
 
     # --- Per-person cohesion ------------------------------------------------------
     # Uses EVERY track still alive, including people inside the exit grace period
